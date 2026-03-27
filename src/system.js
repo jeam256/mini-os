@@ -5,11 +5,13 @@ const APP_ICONS = {
   spotify: "🎵",
   vscode: "🧠",
   notepad: "📝",
+  simulador: "🍽",
 };
 
 const INITIAL_DESKTOP_ITEMS = [
   { id: "chrome", label: "chrome", type: "app", icon: APP_ICONS.chrome },
   { id: "notepad", label: "notepad", type: "app", icon: APP_ICONS.notepad },
+  { id: "simulador", label: "Simulador", type: "app", icon: APP_ICONS.simulador },
   { id: "archivo1.txt", label: "archivo1.txt", type: "file", icon: "📄" },
   { id: "archivo2.txt", label: "archivo2.txt", type: "file", icon: "📄" },
 ];
@@ -79,8 +81,19 @@ function addWindow(windows, item) {
       type: item.type,
       icon: item.icon,
       minimized: false,
+      maximized: false,
+      x: 100,
+      y: 100,
+      width: 900,
+      height: 650,
     },
   ];
+}
+
+function moveWindow(windows, id, x, y) {
+  return windows.map((win) =>
+    win.id === id ? { ...win, x, y } : win
+  );
 }
 
 function executeCommand(state, rawInput) {

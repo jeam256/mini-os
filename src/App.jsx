@@ -8,6 +8,41 @@ import {
   tickScheduler,
 } from "./system";
 
+function toggleMaximize(id) {
+  setSystemState((current) => ({
+    ...current,
+    windows: current.windows.map((win) => {
+      if (win.id !== id) return win;
+
+      if (!win.maximized) {
+        // guardar tamaño anterior
+        return {
+          ...win,
+          maximized: true,
+          prevX: win.x,
+          prevY: win.y,
+          prevWidth: win.width,
+          prevHeight: win.height,
+          x: 0,
+          y: 0,
+          width: window.innerWidth,
+          height: window.innerHeight,
+        };
+      } else {
+        // restaurar
+        return {
+          ...win,
+          maximized: false,
+          x: win.prevX,
+          y: win.prevY,
+          width: win.prevWidth,
+          height: win.prevHeight,
+        };
+      }
+    }),
+  }));
+}
+
 function App() {
   const [systemState, setSystemState] = useState(createInitialState);
   const [input, setInput] = useState("");
@@ -27,6 +62,35 @@ function App() {
       node.scrollTop = node.scrollHeight;
     }
   }, [systemState.logs]);
+
+function moveWindow(id, x, y) {
+  setSystemState((current) => ({
+    ...current,
+    windows: current.windows.map((win) =>
+      win.id === id ? { ...win, x, y } : win
+    ),
+  }));
+}
+
+function handleMouseDown(e, windowItem) {
+  const startX = e.clientX - windowItem.x;
+  const startY = e.clientY - windowItem.y;
+
+  function onMouseMove(e) {
+    const newX = e.clientX - startX;
+    const newY = e.clientY - startY;
+
+    moveWindow(windowItem.id, newX, newY);
+  }
+
+  function onMouseUp() {
+    window.removeEventListener("mousemove", onMouseMove);
+    window.removeEventListener("mouseup", onMouseUp);
+  }
+
+  window.addEventListener("mousemove", onMouseMove);
+  window.addEventListener("mouseup", onMouseUp);
+}
 
   function handleSubmit(event) {
     event.preventDefault();
@@ -139,11 +203,13 @@ function App() {
                 className="app-window"
                 key={windowItem.id}
                 style={{
-                  top: `${88 + index * 24}px`,
-                  left: `${200 + index * 28}px`,
+                  top: `${windowItem.y}px`,
+                  left: `${windowItem.x}px`,
+                  position: "absolute",                
                 }}
               >
-                <header className="window-header">
+                <header className="window-header"
+                  onMouseDown={(e) => handleMouseDown(e, windowItem)} onDoubleClick={() => toggleMaximize(windowItem.id)}>
                   <span>
                     {windowItem.icon} {windowItem.title}
                   </span>
@@ -152,8 +218,18 @@ function App() {
                   </button>
                 </header>
                 <div className="window-content">
-                  {windowItem.type === "file" ? (
-                    <pre>{systemState.fileContents[windowItem.id]}</pre>
+                  {windowItem.id === "simulador" ? (
+                    <iframe
+                      src="/index2.html"
+                      title="Simulador"
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        border: "none",
+                      }}
+                    />
+                  ) : windowItem.type === "file" ? (
+                      <pre>{systemState.fileContents[windowItem.id]}</pre>
                   ) : (
                     <div className="app-preview">
                       <strong>{windowItem.title}</strong>
@@ -161,6 +237,7 @@ function App() {
                       <p>Cierralo con `kill {windowItem.id}` o con la ventana.</p>
                     </div>
                   )}
+
                 </div>
               </article>
             ))}

@@ -242,6 +242,8 @@ button {
 
 .window-content {
   padding: 16px;
+  height: 100%;
+  display: flex;
 }
 
 .window-content pre,
@@ -275,5 +277,7 @@ button {
     left: auto !important;
     width: 100%;
     margin-bottom: 14px;
+    height: 600px;
+    width: 800px;
   }
 }
