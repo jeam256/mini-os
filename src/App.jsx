@@ -97,7 +97,7 @@ function App() {
     if (node) node.scrollTop = node.scrollHeight;
   }, [systemState.logs]);
 
-  // Scheduler loop — cada 1 segundo
+  // Scheduler loop
   useEffect(() => {
     const timer = window.setInterval(() => {
       setSystemState((current) => tickScheduler(current));
@@ -105,15 +105,14 @@ function App() {
     return () => window.clearInterval(timer);
   }, []);
 
-  // ── IA: analizar sistema ──────────────────────────────────
+  // ── IA ────────────────────────────────────────────────────
   const analyzeWithAI = useCallback(async () => {
     setAiState((s) => ({ ...s, loading: true, error: null }));
 
-    // Leemos el estado actual en el momento de la llamada
     setSystemState((current) => {
       const snapshot = buildSystemSnapshot(current);
 
-const prompt = `Responde ÚNICAMENTE con JSON válido, sin texto extra, sin markdown.
+      const prompt = `Responde ÚNICAMENTE con JSON válido, sin texto extra, sin markdown.
 
 Estado actual del sistema operativo:
 ${JSON.stringify(snapshot, null, 2)}
@@ -121,22 +120,22 @@ ${JSON.stringify(snapshot, null, 2)}
 Analiza el sistema y responde con este JSON exacto:
 {
   "alerta": "describe un problema concreto si existe, o null si todo está bien",
-  "sugerencia": "consejo específico y útil sobre el estado del sistema",
+  "sugerencia": "consejo específico sobre memoria o CPU, o null",
   "recomendacion": "recomendación sobre algoritmos de planificación basada en los procesos actuales",
   "acciones": []
 }
 
-Reglas estrictas:
+Reglas:
 - "alerta": solo si memoria supera 80% o hay más de 6 procesos, sino null
-- "sugerencia": frase útil sobre memoria, CPU o cantidad de procesos. Ejemplo: "La memoria está al 60%, considera cerrar procesos pronto"
-- "recomendacion": analiza los algoritmos actuales y sugiere mejoras. Ejemplos:
-    * Si todos usan FIFO y hay más de 3 procesos: "Se recomienda cambiar a Round Robin para mejor distribución del CPU"
-    * Si todos usan RR con quantum alto y pocos procesos: "Con pocos procesos, FIFO es más eficiente y reduce overhead"
-    * Si hay mezcla de algoritmos: "La mezcla de FIFO y RR es adecuada para la carga actual"
-    * Si no hay procesos: "Sin procesos activos, no hay recomendación de algoritmo"
-- "acciones": siempre array vacío []
-- Responde SOLO el JSON, nada más`;
-      // Lanzamos el fetch fuera del setter (efecto secundario)
+- "sugerencia": frase útil como "La memoria está al 60%, considera cerrar procesos pronto" o null
+- "recomendacion": analiza algoritmos actuales:
+  * Si todos usan FIFO y hay más de 3 procesos → sugiere cambiar a Round Robin
+  * Si todos usan RR con pocos procesos → sugiere FIFO para reducir overhead
+  * Si hay mezcla → comenta si es adecuada
+  * Si no hay procesos → "Sin procesos activos"
+- "acciones": siempre []
+- Responde SOLO el JSON`;
+
       fetch("http://localhost:3001/api/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -150,46 +149,31 @@ Reglas estrictas:
         .then((data) => {
           const text = data.choices?.[0]?.message?.content ?? "{}";
           const clean = text.replace(/```json|```/g, "").trim();
-          
           let result;
           try {
             result = JSON.parse(clean);
           } catch {
-            // Si no es JSON válido, mostramos el mensaje tal cual
-            result = {
-              alerta: null,
-              sugerencia: text, // muestra el mensaje completo
-              acciones: [],
-            };
+            result = { alerta: null, sugerencia: text, recomendacion: null, acciones: [] };
           }
-
-          if (result.acciones?.length > 0) {
-            setSystemState((prev) => {
-              let state = prev;
-              for (const cmd of result.acciones) {
-                state = executeCommand(state, cmd);
-              }
-              return state;
-            });
-          }
-
           setAiState({ loading: false, error: null, result });
         })
         .catch(() => {
-          setAiState({ loading: false, error: "No se pudo conectar con el servidor. ¿Está corriendo node server.js?", result: null });
+          setAiState({
+            loading: false,
+            error: "No se pudo conectar. ¿Está corriendo node server.js?",
+            result: null,
+          });
         });
 
-      return current; // no modificamos el estado aquí
+      return current;
     });
   }, []);
 
-  // Auto-análisis cada 15 segundos (solo si hay procesos)
+  // Auto-análisis cada 15s solo si hay procesos
   useEffect(() => {
     const interval = setInterval(() => {
       setSystemState((current) => {
-        if (current.procesos.length > 0) {
-          analyzeWithAI();
-        }
+        if (current.procesos.length > 0) analyzeWithAI();
         return current;
       });
     }, 15000);
@@ -200,9 +184,7 @@ Reglas estrictas:
   function handleSubmit(event) {
     event.preventDefault();
     const rawCommand = input.trim();
-    if (rawCommand) {
-      setSystemState((current) => executeCommand(current, rawCommand));
-    }
+    if (rawCommand) setSystemState((current) => executeCommand(current, rawCommand));
     setInput("");
   }
 
@@ -230,7 +212,6 @@ Reglas estrictas:
   function handleMouseDown(e, windowItem) {
     const startX = e.clientX - windowItem.x;
     const startY = e.clientY - windowItem.y;
-
     function onMouseMove(e) {
       moveWindowItem(windowItem.id, e.clientX - startX, e.clientY - startY);
     }
@@ -253,7 +234,7 @@ Reglas estrictas:
       <section className="terminal-pane">
         <div className="panel-header">
           <span className="panel-title">{APP_ICONS.terminal} Terminal</span>
-          <span className="panel-pill">📊 Sistema Operativo Mini</span>
+          <span className="panel-pill">📊 Mini OS v2.0</span>
         </div>
 
         <div className="terminal-body" ref={terminalBodyRef}>
@@ -263,12 +244,12 @@ Reglas estrictas:
         </div>
 
         <form className="terminal-input-row" onSubmit={handleSubmit}>
-          <span className="prompt">MiSO&gt;</span>
+          <span className="prompt">MiSO {systemState.directorioActual}&gt;</span>
           <input
             className="terminal-input"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="ejecutar chrome -algoritmo rr -quantum 2"
+            placeholder="ls, mkdir, cd, cat, write, chmod..."
             autoFocus
           />
         </form>
@@ -278,7 +259,7 @@ Reglas estrictas:
       <section className="desktop-pane">
         <div className="desktop-topbar">
           <div className="status-chip">
-            {APP_ICONS.chrome} {systemState.appsActivas.length} apps activas
+            {APP_ICONS.chrome} {systemState.appsActivas.length} apps · 📁 {systemState.directorioActual}
           </div>
           <div className="status-clock">{systemState.hora}</div>
         </div>
@@ -328,6 +309,14 @@ Reglas estrictas:
                 <div className="stat-row">
                   <span>Finalizados:</span>
                   <strong className="finished">{finishedItems}</strong>
+                </div>
+                <div className="stat-row">
+                  <span>Directorio:</span>
+                  <strong style={{ color: "#a78bfa" }}>{systemState.directorioActual}</strong>
+                </div>
+                <div className="stat-row">
+                  <span>Archivos:</span>
+                  <strong>{Object.keys(systemState.fileSystem).length}</strong>
                 </div>
               </div>
             </div>
@@ -387,19 +376,13 @@ Reglas estrictas:
                       💡 {aiState.result.sugerencia}
                     </div>
                   )}
-                  {aiState.result.acciones?.length > 0 && (
-                    <div style={{ padding: 8, borderRadius: 6, background: "rgba(34,197,94,0.1)", border: "1px solid rgba(34,197,94,0.3)", color: "#86efac" }}>
-                      ✅ Ejecutado: {aiState.result.acciones.join(", ")}
-                    </div>
-                  )}
-                  {!aiState.result.alerta && !aiState.result.sugerencia && aiState.result.acciones?.length === 0 && (
-                    <p style={{ color: "#6b7280", margin: 0 }}>✔ Sistema estable. Sin acciones necesarias.</p>
-                  )}
                   {aiState.result.recomendacion && (
-                    <div style={{ padding: 8, borderRadius: 6, background: "rgba(139,92,246,0.15)",
-                                  border: "1px solid rgba(139,92,246,0.4)", color: "#c4b5fd" }}>
+                    <div style={{ padding: 8, borderRadius: 6, background: "rgba(139,92,246,0.15)", border: "1px solid rgba(139,92,246,0.4)", color: "#c4b5fd" }}>
                       🧠 {aiState.result.recomendacion}
                     </div>
+                  )}
+                  {!aiState.result.alerta && !aiState.result.sugerencia && !aiState.result.recomendacion && (
+                    <p style={{ color: "#6b7280", margin: 0 }}>✔ Sistema estable.</p>
                   )}
                 </div>
               )}
@@ -429,7 +412,9 @@ Reglas estrictas:
                 </header>
                 <div className="window-content">
                   {windowItem.type === "file" ? (
-                    <pre>{systemState.fileContents[windowItem.id]}</pre>
+                    <pre style={{ margin: 0, whiteSpace: "pre-wrap" }}>
+                      {systemState.fileSystem[windowItem.id]?.contenido ?? "Archivo no encontrado"}
+                    </pre>
                   ) : windowItem.id === "index2" ? (
                     <iframe
                       src="/index2.html"

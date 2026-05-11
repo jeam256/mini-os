@@ -51,6 +51,9 @@ button {
   background: rgba(10, 14, 39, 0.95);
   border-right: 1px solid rgba(59, 130, 246, 0.2);
   backdrop-filter: blur(20px);
+  height: 100vh;      /* Ocupa exactamente el alto de la ventana */
+  overflow: hidden;   /* Evita que el panel entero haga scroll */
+  padding: 24px;
 }
 
 .panel-header,
@@ -81,7 +84,9 @@ button {
 
 .terminal-body {
   flex: 1;
-  overflow: auto;
+  overflow-y: auto;      /* ← barra deslizadora vertical */
+  overflow-x: hidden;    /* ← sin scroll horizontal */
+  min-height: 0;         /* ← permite que flex no expanda */
   padding: 16px;
   border-radius: 12px;
   background: rgba(20, 24, 50, 0.9);
@@ -100,9 +105,10 @@ button {
 
 .terminal-input-row {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   gap: 10px;
-  padding: 14px 16px;
+  padding: 8px 16px;
   border-radius: 12px;
   background: rgba(30, 40, 70, 0.9);
   border: 1px solid rgba(59, 130, 246, 0.3);
@@ -122,6 +128,8 @@ button {
   background: transparent;
   color: #e0e7ff;
   font-family: "Fira Code", monospace;
+  font-size: 0.95rem;
+  padding: 4px 0;
 }
 
 .terminal-input::placeholder {
