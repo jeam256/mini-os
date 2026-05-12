@@ -38,35 +38,26 @@ const SCHEDULING_ALGORITHMS = {
 // SISTEMA DE ARCHIVOS INICIAL
 // ================================
 const INITIAL_FILE_SYSTEM = {
-  "/": {
-    archivos: ["README.txt", "NOTAS.txt"],
-    subdirs: ["/docs", "/src"],
-  },
-  "/docs": {
-    archivos: ["manual.txt"],
-    subdirs: [],
-  },
-  "/src": {
-    archivos: ["config.txt"],
-    subdirs: [],
-  },
+  "/": { archivos: ["README.txt", "NOTAS.txt"], subdirs: ["/docs", "/src"] },
+  "/docs": { archivos: ["manual.txt"], subdirs: [] },
+  "/src": { archivos: ["config.txt"], subdirs: [] },
 };
 
 const INITIAL_FILES = {
   "README.txt": {
-    contenido: "Sistema Operativo Mini - Simulación\n\nMódulos implementados:\n1. Gestión de Procesos\n2. Planificación de CPU (FIFO, Round Robin)\n3. Gestión de Memoria\n4. Sistema de Archivos\n\nComandos: ejecutar, procesos, memoria, kill, killall, ls, mkdir, cd, cat, write, chmod, crear, eliminar, ayuda",
+    contenido: "Sistema Operativo Mini v2.0\n\nMódulos:\n1. Gestión de Procesos\n2. Planificación CPU (FIFO/RR)\n3. Gestión de Memoria\n4. Sistema de Archivos\n5. Sincronización (Semáforos/Mutex)\n\nEscribe 'ayuda' para ver todos los comandos.",
     permisos: { leer: true, escribir: false, ejecutar: false },
     directorio: "/",
     creadoEn: new Date().toLocaleString(),
   },
   "NOTAS.txt": {
-    contenido: "Ejemplos:\nejecutar chrome -algoritmo fifo\nejecutar vscode -algoritmo rr -quantum 3\nprocesos\nmemoria\nkill chrome\nkillall\nls\nmkdir proyectos\ncd proyectos\ncat README.txt\nwrite NOTAS.txt Nuevo contenido\nchmod NOTAS.txt r w -",
+    contenido: "Ejemplos de sincronización:\nsem crear impresora 2\nsem wait impresora chrome\nsem signal impresora\nsem list\nmutex crear db\nmutex lock db vscode\nmutex unlock db\nmutex list",
     permisos: { leer: true, escribir: true, ejecutar: false },
     directorio: "/",
     creadoEn: new Date().toLocaleString(),
   },
   "manual.txt": {
-    contenido: "Manual de usuario\n\nEste sistema operativo simulado permite gestionar procesos y archivos desde la terminal.",
+    contenido: "Manual de usuario\n\nEste sistema operativo simulado permite gestionar procesos, archivos y sincronización.",
     permisos: { leer: true, escribir: true, ejecutar: false },
     directorio: "/docs",
     creadoEn: new Date().toLocaleString(),
@@ -88,7 +79,7 @@ function randomDuration() {
 
 function parseCommand(input) {
   const parts = input.trim().split(/\s+/).filter(Boolean);
-  if (parts.length === 0) return { command: null, name: null, params: {}, rest: [] };
+  if (parts.length === 0) return { command: null, name: null, params: {}, rest: [], parts: [] };
 
   const command = parts[0];
   const name = parts[1] ?? null;
@@ -107,7 +98,7 @@ function parseCommand(input) {
     }
   }
 
-  return { command, name, params, rest };
+  return { command, name, params, rest, parts };
 }
 
 function resolverRuta(dirActual, destino) {
@@ -145,6 +136,8 @@ function buildProcess(name, params, isApp) {
     cuantumUsado: 0,
     infinito: isApp,
     createdAt: Date.now(),
+    // Semáforo/mutex que tiene bloqueado el proceso (si aplica)
+    bloqueadoPor: null,
   };
 }
 
@@ -178,11 +171,23 @@ function moveWindow(windows, id, x, y) {
 }
 
 // ================================
+// SINCRONIZACIÓN — HELPERS
+// ================================
+
+// Muestra el estado de un semáforo en formato legible
+function semDisplay(sem) {
+  const tipo = sem.tipo === "mutex" ? "MUTEX" : "SEM";
+  const barra = "█".repeat(sem.valor) + "░".repeat(Math.max(0, sem.maxValor - sem.valor));
+  const esperando = sem.esperando.length > 0 ? ` | esperando: [${sem.esperando.join(", ")}]` : "";
+  return `${tipo} '${sem.nombre}' valor=${sem.valor}/${sem.maxValor} [${barra}]${esperando}`;
+}
+
+// ================================
 // EJECUTAR COMANDOS
 // ================================
 function executeCommand(state, rawInput) {
   const lines = rawInput === "clear" ? [] : [...state.logs, `MiSO ${state.directorioActual}> ${rawInput}`];
-  const { command, name, params, rest } = parseCommand(rawInput);
+  const { command, name, params, rest, parts } = parseCommand(rawInput);
 
   if (!command) return { ...state, logs: lines };
 
@@ -232,12 +237,13 @@ function executeCommand(state, rawInput) {
       nextLogs.push("No hay procesos activos");
       return { ...state, logs: nextLogs };
     }
-    nextLogs.push("IDX | NOMBRE     | ESTADO    | ALGORITMO | TIEMPO/TOTAL");
-    nextLogs.push("-".repeat(58));
+    nextLogs.push("IDX | NOMBRE     | ESTADO    | ALGORITMO | TIEMPO/TOTAL | BLOQUEADO POR");
+    nextLogs.push("-".repeat(72));
     state.procesos.forEach((p, idx) => {
       const tiempo = p.infinito ? `${p.tiempo}/∞` : `${p.tiempo}/${p.duracion}`;
       const algo = p.algoritmo === SCHEDULING_ALGORITHMS.ROUND_ROBIN ? "RR" : "FIFO";
-      nextLogs.push(`${String(idx).padEnd(3)} | ${p.nombre.padEnd(10)} | ${p.estado.padEnd(9)} | ${algo.padEnd(9)} | ${tiempo}`);
+      const bloq = p.bloqueadoPor ? p.bloqueadoPor : "-";
+      nextLogs.push(`${String(idx).padEnd(3)} | ${p.nombre.padEnd(10)} | ${p.estado.padEnd(9)} | ${algo.padEnd(9)} | ${tiempo.padEnd(12)} | ${bloq}`);
     });
     return { ...state, logs: nextLogs };
   }
@@ -252,6 +258,16 @@ function executeCommand(state, rawInput) {
   if (command === "kill" && name) {
     const process = state.procesos.find((p) => p.nombre === name);
     if (!process) return { ...state, logs: [...lines, `ERROR: proceso '${name}' no encontrado`] };
+
+    // Si el proceso estaba esperando un semáforo, quitarlo de la cola de espera
+    const nextSemaforos = { ...state.semaforos };
+    Object.keys(nextSemaforos).forEach((key) => {
+      const sem = nextSemaforos[key];
+      if (sem.esperando.includes(name)) {
+        nextSemaforos[key] = { ...sem, esperando: sem.esperando.filter((p) => p !== name) };
+      }
+    });
+
     return {
       ...state,
       logs: [...lines, `✓ Proceso '${name}' terminado (pid: ${process.id})`],
@@ -261,6 +277,7 @@ function executeCommand(state, rawInput) {
       cpuProceso: state.cpuProceso?.id === process.id ? null : state.cpuProceso,
       memoria: Math.max(0, state.memoria - MEMORY_PER_PROCESS),
       windows: state.windows.filter((w) => w.id !== name),
+      semaforos: nextSemaforos,
     };
   }
 
@@ -268,10 +285,16 @@ function executeCommand(state, rawInput) {
   if (command === "killall") {
     if (state.procesos.length === 0) return { ...state, logs: [...lines, "No hay procesos activos para terminar"] };
     const count = state.procesos.length;
+    // Limpiar colas de espera de todos los semáforos
+    const nextSemaforos = {};
+    Object.keys(state.semaforos).forEach((key) => {
+      nextSemaforos[key] = { ...state.semaforos[key], esperando: [] };
+    });
     return {
       ...state,
       logs: [...lines, `✓ ${count} proceso(s) terminado(s)`],
       procesos: [], colaReady: [], cpuProceso: null, appsActivas: [], memoria: 0, windows: [],
+      semaforos: nextSemaforos,
     };
   }
 
@@ -279,10 +302,327 @@ function executeCommand(state, rawInput) {
   if (command === "clear") return { ...state, logs: [] };
 
   // ════════════════════════════════════════════════
+  // SINCRONIZACIÓN — SEMÁFOROS
+  // Uso:
+  //   sem crear <nombre> <valor>
+  //   sem wait <nombre> <proceso>
+  //   sem signal <nombre>
+  //   sem list
+  // ════════════════════════════════════════════════
+  if (command === "sem") {
+    const subcommand = name;       // crear | wait | signal | list
+    const arg1 = parts[2] ?? null; // nombre del semáforo
+    const arg2 = parts[3] ?? null; // valor inicial o nombre de proceso
+    const nextLogs = [...lines];
+
+    // sem list
+    if (subcommand === "list") {
+      const keys = Object.keys(state.semaforos).filter((k) => state.semaforos[k].tipo === "semaforo");
+      if (keys.length === 0) {
+        nextLogs.push("No hay semáforos creados. Usa: sem crear <nombre> <valor>");
+        return { ...state, logs: nextLogs };
+      }
+      nextLogs.push("=== SEMÁFOROS ===");
+      keys.forEach((k) => nextLogs.push("  " + semDisplay(state.semaforos[k])));
+      return { ...state, logs: nextLogs };
+    }
+
+    // sem crear <nombre> <valor>
+    if (subcommand === "crear") {
+      if (!arg1 || !arg2) {
+        nextLogs.push("ERROR: uso → sem crear <nombre> <valor>");
+        nextLogs.push("Ejemplo: sem crear impresora 2");
+        return { ...state, logs: nextLogs };
+      }
+      if (state.semaforos[arg1]) {
+        nextLogs.push(`ERROR: semáforo '${arg1}' ya existe`);
+        return { ...state, logs: nextLogs };
+      }
+      const valor = Math.max(1, parseInt(arg2, 10) || 1);
+      nextLogs.push(`✓ Semáforo '${arg1}' creado (valor inicial: ${valor})`);
+      return {
+        ...state,
+        logs: nextLogs,
+        semaforos: {
+          ...state.semaforos,
+          [arg1]: { nombre: arg1, valor, maxValor: valor, tipo: "semaforo", esperando: [] },
+        },
+      };
+    }
+
+    // sem wait <nombre> <proceso>
+    if (subcommand === "wait") {
+      if (!arg1 || !arg2) {
+        nextLogs.push("ERROR: uso → sem wait <nombre> <proceso>");
+        nextLogs.push("Ejemplo: sem wait impresora chrome");
+        return { ...state, logs: nextLogs };
+      }
+      const sem = state.semaforos[arg1];
+      if (!sem || sem.tipo !== "semaforo") {
+        nextLogs.push(`ERROR: semáforo '${arg1}' no encontrado. Usa: sem crear ${arg1} <valor>`);
+        return { ...state, logs: nextLogs };
+      }
+      const proceso = state.procesos.find((p) => p.nombre === arg2);
+      if (!proceso) {
+        nextLogs.push(`ERROR: proceso '${arg2}' no encontrado. Usa: ejecutar ${arg2}`);
+        return { ...state, logs: nextLogs };
+      }
+
+      // Si hay valor disponible → decrementa y continúa
+      if (sem.valor > 0) {
+        nextLogs.push(`✓ '${arg2}' adquirió semáforo '${arg1}' (valor: ${sem.valor} → ${sem.valor - 1})`);
+        return {
+          ...state,
+          logs: nextLogs,
+          semaforos: {
+            ...state.semaforos,
+            [arg1]: { ...sem, valor: sem.valor - 1 },
+          },
+          procesos: state.procesos.map((p) =>
+            p.nombre === arg2 ? { ...p, bloqueadoPor: null } : p
+          ),
+        };
+      }
+
+      // Si valor = 0 → proceso pasa a WAITING
+      nextLogs.push(`⏸ '${arg2}' bloqueado esperando semáforo '${arg1}' (valor=0)`);
+      return {
+        ...state,
+        logs: nextLogs,
+        semaforos: {
+          ...state.semaforos,
+          [arg1]: { ...sem, esperando: [...sem.esperando, arg2] },
+        },
+        procesos: state.procesos.map((p) =>
+          p.nombre === arg2 ? { ...p, estado: PROCESS_STATES.WAITING, bloqueadoPor: arg1 } : p
+        ),
+        colaReady: state.colaReady.filter((p) => p.nombre !== arg2),
+        cpuProceso: state.cpuProceso?.nombre === arg2 ? null : state.cpuProceso,
+      };
+    }
+
+    // sem signal <nombre>
+    if (subcommand === "signal") {
+      if (!arg1) {
+        nextLogs.push("ERROR: uso → sem signal <nombre>");
+        return { ...state, logs: nextLogs };
+      }
+      const sem = state.semaforos[arg1];
+      if (!sem || sem.tipo !== "semaforo") {
+        nextLogs.push(`ERROR: semáforo '${arg1}' no encontrado`);
+        return { ...state, logs: nextLogs };
+      }
+      if (sem.valor >= sem.maxValor) {
+        nextLogs.push(`⚠ Semáforo '${arg1}' ya está en su valor máximo (${sem.maxValor})`);
+        return { ...state, logs: nextLogs };
+      }
+
+      // Si hay procesos esperando → despertar el primero
+      if (sem.esperando.length > 0) {
+        const siguiente = sem.esperando[0];
+        const restantes = sem.esperando.slice(1);
+        const procesoDesperto = state.procesos.find((p) => p.nombre === siguiente);
+
+        nextLogs.push(`✓ Signal en '${arg1}': proceso '${siguiente}' despertado → READY`);
+        return {
+          ...state,
+          logs: nextLogs,
+          semaforos: {
+            ...state.semaforos,
+            [arg1]: { ...sem, esperando: restantes },
+          },
+          procesos: state.procesos.map((p) =>
+            p.nombre === siguiente
+              ? { ...p, estado: PROCESS_STATES.READY, bloqueadoPor: null }
+              : p
+          ),
+          colaReady: procesoDesperto
+            ? [...state.colaReady, { ...procesoDesperto, estado: PROCESS_STATES.READY, bloqueadoPor: null }]
+            : state.colaReady,
+        };
+      }
+
+      // Sin procesos esperando → solo incrementa
+      nextLogs.push(`✓ Signal en '${arg1}' (valor: ${sem.valor} → ${sem.valor + 1})`);
+      return {
+        ...state,
+        logs: nextLogs,
+        semaforos: {
+          ...state.semaforos,
+          [arg1]: { ...sem, valor: sem.valor + 1 },
+        },
+      };
+    }
+
+    nextLogs.push("ERROR: subcomando no reconocido. Usa: sem crear | sem wait | sem signal | sem list");
+    return { ...state, logs: nextLogs };
+  }
+
+  // ════════════════════════════════════════════════
+  // SINCRONIZACIÓN — MUTEX
+  // Uso:
+  //   mutex crear <nombre>
+  //   mutex lock <nombre> <proceso>
+  //   mutex unlock <nombre>
+  //   mutex list
+  // ════════════════════════════════════════════════
+  if (command === "mutex") {
+    const subcommand = name;
+    const arg1 = parts[2] ?? null;
+    const arg2 = parts[3] ?? null;
+    const nextLogs = [...lines];
+
+    // mutex list
+    if (subcommand === "list") {
+      const keys = Object.keys(state.semaforos).filter((k) => state.semaforos[k].tipo === "mutex");
+      if (keys.length === 0) {
+        nextLogs.push("No hay mutex creados. Usa: mutex crear <nombre>");
+        return { ...state, logs: nextLogs };
+      }
+      nextLogs.push("=== MUTEX ===");
+      keys.forEach((k) => {
+        const m = state.semaforos[k];
+        const estado = m.valor === 1 ? "LIBRE 🟢" : `OCUPADO 🔴 (dueño: ${m.dueno ?? "?"})`;
+        const esp = m.esperando.length > 0 ? ` | esperando: [${m.esperando.join(", ")}]` : "";
+        nextLogs.push(`  MUTEX '${m.nombre}': ${estado}${esp}`);
+      });
+      return { ...state, logs: nextLogs };
+    }
+
+    // mutex crear <nombre>
+    if (subcommand === "crear") {
+      if (!arg1) {
+        nextLogs.push("ERROR: uso → mutex crear <nombre>");
+        nextLogs.push("Ejemplo: mutex crear db");
+        return { ...state, logs: nextLogs };
+      }
+      if (state.semaforos[arg1]) {
+        nextLogs.push(`ERROR: '${arg1}' ya existe`);
+        return { ...state, logs: nextLogs };
+      }
+      nextLogs.push(`✓ Mutex '${arg1}' creado (libre)`);
+      return {
+        ...state,
+        logs: nextLogs,
+        semaforos: {
+          ...state.semaforos,
+          [arg1]: { nombre: arg1, valor: 1, maxValor: 1, tipo: "mutex", esperando: [], dueno: null },
+        },
+      };
+    }
+
+    // mutex lock <nombre> <proceso>
+    if (subcommand === "lock") {
+      if (!arg1 || !arg2) {
+        nextLogs.push("ERROR: uso → mutex lock <nombre> <proceso>");
+        nextLogs.push("Ejemplo: mutex lock db vscode");
+        return { ...state, logs: nextLogs };
+      }
+      const mutex = state.semaforos[arg1];
+      if (!mutex || mutex.tipo !== "mutex") {
+        nextLogs.push(`ERROR: mutex '${arg1}' no encontrado. Usa: mutex crear ${arg1}`);
+        return { ...state, logs: nextLogs };
+      }
+      const proceso = state.procesos.find((p) => p.nombre === arg2);
+      if (!proceso) {
+        nextLogs.push(`ERROR: proceso '${arg2}' no encontrado. Usa: ejecutar ${arg2}`);
+        return { ...state, logs: nextLogs };
+      }
+
+      // Mutex libre → adquirir
+      if (mutex.valor === 1) {
+        nextLogs.push(`✓ '${arg2}' adquirió mutex '${arg1}' 🔒`);
+        return {
+          ...state,
+          logs: nextLogs,
+          semaforos: {
+            ...state.semaforos,
+            [arg1]: { ...mutex, valor: 0, dueno: arg2 },
+          },
+          procesos: state.procesos.map((p) =>
+            p.nombre === arg2 ? { ...p, bloqueadoPor: null } : p
+          ),
+        };
+      }
+
+      // Mutex ocupado → proceso pasa a WAITING
+      nextLogs.push(`⏸ '${arg2}' bloqueado: mutex '${arg1}' está ocupado por '${mutex.dueno}' 🔴`);
+      return {
+        ...state,
+        logs: nextLogs,
+        semaforos: {
+          ...state.semaforos,
+          [arg1]: { ...mutex, esperando: [...mutex.esperando, arg2] },
+        },
+        procesos: state.procesos.map((p) =>
+          p.nombre === arg2 ? { ...p, estado: PROCESS_STATES.WAITING, bloqueadoPor: arg1 } : p
+        ),
+        colaReady: state.colaReady.filter((p) => p.nombre !== arg2),
+        cpuProceso: state.cpuProceso?.nombre === arg2 ? null : state.cpuProceso,
+      };
+    }
+
+    // mutex unlock <nombre>
+    if (subcommand === "unlock") {
+      if (!arg1) {
+        nextLogs.push("ERROR: uso → mutex unlock <nombre>");
+        return { ...state, logs: nextLogs };
+      }
+      const mutex = state.semaforos[arg1];
+      if (!mutex || mutex.tipo !== "mutex") {
+        nextLogs.push(`ERROR: mutex '${arg1}' no encontrado`);
+        return { ...state, logs: nextLogs };
+      }
+      if (mutex.valor === 1) {
+        nextLogs.push(`⚠ Mutex '${arg1}' ya estaba libre`);
+        return { ...state, logs: nextLogs };
+      }
+
+      // Si hay procesos esperando → el primero adquiere el mutex
+      if (mutex.esperando.length > 0) {
+        const siguiente = mutex.esperando[0];
+        const restantes = mutex.esperando.slice(1);
+        const procesoDesperto = state.procesos.find((p) => p.nombre === siguiente);
+
+        nextLogs.push(`✓ Mutex '${arg1}' liberado por '${mutex.dueno}' → '${siguiente}' lo adquiere 🔒`);
+        return {
+          ...state,
+          logs: nextLogs,
+          semaforos: {
+            ...state.semaforos,
+            [arg1]: { ...mutex, valor: 0, dueno: siguiente, esperando: restantes },
+          },
+          procesos: state.procesos.map((p) =>
+            p.nombre === siguiente
+              ? { ...p, estado: PROCESS_STATES.READY, bloqueadoPor: null }
+              : p
+          ),
+          colaReady: procesoDesperto
+            ? [...state.colaReady, { ...procesoDesperto, estado: PROCESS_STATES.READY, bloqueadoPor: null }]
+            : state.colaReady,
+        };
+      }
+
+      // Sin procesos esperando → liberar
+      nextLogs.push(`✓ Mutex '${arg1}' liberado por '${mutex.dueno}' 🟢`);
+      return {
+        ...state,
+        logs: nextLogs,
+        semaforos: {
+          ...state.semaforos,
+          [arg1]: { ...mutex, valor: 1, dueno: null },
+        },
+      };
+    }
+
+    nextLogs.push("ERROR: subcomando no reconocido. Usa: mutex crear | mutex lock | mutex unlock | mutex list");
+    return { ...state, logs: nextLogs };
+  }
+
+  // ════════════════════════════════════════════════
   // SISTEMA DE ARCHIVOS
   // ════════════════════════════════════════════════
 
-  // ── ls ────────────────────────────────────────────────────
   if (command === "ls") {
     const nextLogs = [...lines];
     const dir = state.directorios[state.directorioActual];
@@ -292,13 +632,8 @@ function executeCommand(state, rawInput) {
     }
     nextLogs.push(`📁 ${state.directorioActual}`);
     nextLogs.push("-".repeat(40));
-    if (dir.subdirs.length === 0 && dir.archivos.length === 0) {
-      nextLogs.push("  (vacío)");
-    }
-    dir.subdirs.forEach((sub) => {
-      const nombre = sub.split("/").pop();
-      nextLogs.push(`  📁 ${nombre}/`);
-    });
+    if (dir.subdirs.length === 0 && dir.archivos.length === 0) nextLogs.push("  (vacío)");
+    dir.subdirs.forEach((sub) => nextLogs.push(`  📁 ${sub.split("/").pop()}/`));
     dir.archivos.forEach((archivo) => {
       const meta = state.fileSystem[archivo];
       const perms = meta ? permisosDisplay(meta.permisos) : "[---]";
@@ -307,7 +642,6 @@ function executeCommand(state, rawInput) {
     return { ...state, logs: nextLogs };
   }
 
-  // ── mkdir ─────────────────────────────────────────────────
   if (command === "mkdir" && name) {
     const nextLogs = [...lines];
     const nuevaRuta = resolverRuta(state.directorioActual, name);
@@ -322,16 +656,12 @@ function executeCommand(state, rawInput) {
       logs: nextLogs,
       directorios: {
         ...state.directorios,
-        [state.directorioActual]: {
-          ...dirActual,
-          subdirs: [...dirActual.subdirs, nuevaRuta],
-        },
+        [state.directorioActual]: { ...dirActual, subdirs: [...dirActual.subdirs, nuevaRuta] },
         [nuevaRuta]: { archivos: [], subdirs: [] },
       },
     };
   }
 
-  // ── cd ────────────────────────────────────────────────────
   if (command === "cd") {
     const nextLogs = [...lines];
     const destino = name ?? "/";
@@ -344,105 +674,46 @@ function executeCommand(state, rawInput) {
     return { ...state, logs: nextLogs, directorioActual: nuevaRuta };
   }
 
-  // ── cat ───────────────────────────────────────────────────
   if (command === "cat" && name) {
     const nextLogs = [...lines];
     const meta = state.fileSystem[name];
-    if (!meta) {
-      nextLogs.push(`ERROR: archivo '${name}' no encontrado`);
-      return { ...state, logs: nextLogs };
-    }
-    if (meta.directorio !== state.directorioActual) {
-      nextLogs.push(`ERROR: '${name}' no está en el directorio actual (está en ${meta.directorio})`);
-      return { ...state, logs: nextLogs };
-    }
-    if (!meta.permisos.leer) {
-      nextLogs.push(`ERROR: sin permiso de lectura en '${name}' ${permisosDisplay(meta.permisos)}`);
-      return { ...state, logs: nextLogs };
-    }
+    if (!meta) { nextLogs.push(`ERROR: archivo '${name}' no encontrado`); return { ...state, logs: nextLogs }; }
+    if (meta.directorio !== state.directorioActual) { nextLogs.push(`ERROR: '${name}' está en ${meta.directorio}, no en ${state.directorioActual}`); return { ...state, logs: nextLogs }; }
+    if (!meta.permisos.leer) { nextLogs.push(`ERROR: sin permiso de lectura ${permisosDisplay(meta.permisos)}`); return { ...state, logs: nextLogs }; }
     nextLogs.push(`── ${name} ──`);
-    meta.contenido.split("\n").forEach((linea) => nextLogs.push(linea));
+    meta.contenido.split("\n").forEach((l) => nextLogs.push(l));
     nextLogs.push(`── fin ──`);
     return { ...state, logs: nextLogs };
   }
 
-  // ── write ─────────────────────────────────────────────────
   if (command === "write" && name) {
     const nextLogs = [...lines];
     const meta = state.fileSystem[name];
-    if (!meta) {
-      nextLogs.push(`ERROR: archivo '${name}' no encontrado`);
-      return { ...state, logs: nextLogs };
-    }
-    if (meta.directorio !== state.directorioActual) {
-      nextLogs.push(`ERROR: '${name}' no está en el directorio actual`);
-      return { ...state, logs: nextLogs };
-    }
-    if (!meta.permisos.escribir) {
-      nextLogs.push(`ERROR: sin permiso de escritura en '${name}' ${permisosDisplay(meta.permisos)}`);
-      return { ...state, logs: nextLogs };
-    }
+    if (!meta) { nextLogs.push(`ERROR: archivo '${name}' no encontrado`); return { ...state, logs: nextLogs }; }
+    if (meta.directorio !== state.directorioActual) { nextLogs.push(`ERROR: '${name}' no está en el directorio actual`); return { ...state, logs: nextLogs }; }
+    if (!meta.permisos.escribir) { nextLogs.push(`ERROR: sin permiso de escritura ${permisosDisplay(meta.permisos)}`); return { ...state, logs: nextLogs }; }
     const nuevoContenido = rest.join(" ");
-    if (!nuevoContenido) {
-      nextLogs.push("ERROR: especifica el contenido → write <archivo.txt> <texto>");
-      return { ...state, logs: nextLogs };
-    }
+    if (!nuevoContenido) { nextLogs.push("ERROR: uso → write <archivo.txt> <texto>"); return { ...state, logs: nextLogs }; }
     nextLogs.push(`✓ '${name}' actualizado`);
-    return {
-      ...state,
-      logs: nextLogs,
-      fileSystem: {
-        ...state.fileSystem,
-        [name]: { ...meta, contenido: nuevoContenido },
-      },
-    };
+    return { ...state, logs: nextLogs, fileSystem: { ...state.fileSystem, [name]: { ...meta, contenido: nuevoContenido } } };
   }
 
-  // ── chmod ─────────────────────────────────────────────────
   if (command === "chmod" && name) {
     const nextLogs = [...lines];
     const meta = state.fileSystem[name];
-    if (!meta) {
-      nextLogs.push(`ERROR: archivo '${name}' no encontrado`);
-      return { ...state, logs: nextLogs };
-    }
-    if (meta.directorio !== state.directorioActual) {
-      nextLogs.push(`ERROR: '${name}' no está en el directorio actual`);
-      return { ...state, logs: nextLogs };
-    }
+    if (!meta) { nextLogs.push(`ERROR: archivo '${name}' no encontrado`); return { ...state, logs: nextLogs }; }
+    if (meta.directorio !== state.directorioActual) { nextLogs.push(`ERROR: '${name}' no está en el directorio actual`); return { ...state, logs: nextLogs }; }
     const [r, w, x] = rest;
-    if (!r || !w || !x) {
-      nextLogs.push("ERROR: uso → chmod <archivo.txt> <r|-> <w|-> <x|->");
-      nextLogs.push("Ejemplo: chmod notas.txt r w -");
-      return { ...state, logs: nextLogs };
-    }
-    const nuevosPermisos = {
-      leer: r === "r",
-      escribir: w === "w",
-      ejecutar: x === "x",
-    };
+    if (!r || !w || !x) { nextLogs.push("ERROR: uso → chmod <archivo.txt> <r|-> <w|-> <x|->"); return { ...state, logs: nextLogs }; }
+    const nuevosPermisos = { leer: r === "r", escribir: w === "w", ejecutar: x === "x" };
     nextLogs.push(`✓ Permisos de '${name}' actualizados: ${permisosDisplay(nuevosPermisos)}`);
-    return {
-      ...state,
-      logs: nextLogs,
-      fileSystem: {
-        ...state.fileSystem,
-        [name]: { ...meta, permisos: nuevosPermisos },
-      },
-    };
+    return { ...state, logs: nextLogs, fileSystem: { ...state.fileSystem, [name]: { ...meta, permisos: nuevosPermisos } } };
   }
 
-  // ── crear ─────────────────────────────────────────────────
   if (command === "crear" && name) {
     const nextLogs = [...lines];
-    if (!name.endsWith(".txt")) {
-      nextLogs.push("ERROR: solo se permiten archivos .txt");
-      return { ...state, logs: nextLogs };
-    }
-    if (state.fileSystem[name]) {
-      nextLogs.push("ERROR: el archivo ya existe");
-      return { ...state, logs: nextLogs };
-    }
+    if (!name.endsWith(".txt")) { nextLogs.push("ERROR: solo se permiten archivos .txt"); return { ...state, logs: nextLogs }; }
+    if (state.fileSystem[name]) { nextLogs.push("ERROR: el archivo ya existe"); return { ...state, logs: nextLogs }; }
     const dirActual = state.directorios[state.directorioActual];
     nextLogs.push(`✓ Archivo '${name}' creado en ${state.directorioActual}`);
     return {
@@ -459,10 +730,7 @@ function executeCommand(state, rawInput) {
       },
       directorios: {
         ...state.directorios,
-        [state.directorioActual]: {
-          ...dirActual,
-          archivos: [...dirActual.archivos, name],
-        },
+        [state.directorioActual]: { ...dirActual, archivos: [...dirActual.archivos, name] },
       },
       desktopItems: state.directorioActual === "/"
         ? [...state.desktopItems, { id: name, label: name, type: "file", icon: "📄" }]
@@ -470,22 +738,12 @@ function executeCommand(state, rawInput) {
     };
   }
 
-  // ── eliminar / rm ─────────────────────────────────────────
   if ((command === "eliminar" || command === "rm") && name) {
     const nextLogs = [...lines];
     const meta = state.fileSystem[name];
-    if (!meta) {
-      nextLogs.push(`ERROR: archivo '${name}' no encontrado`);
-      return { ...state, logs: nextLogs };
-    }
-    if (meta.directorio !== state.directorioActual) {
-      nextLogs.push(`ERROR: '${name}' no está en el directorio actual`);
-      return { ...state, logs: nextLogs };
-    }
-    if (!meta.permisos.escribir) {
-      nextLogs.push(`ERROR: sin permiso de escritura para eliminar '${name}' ${permisosDisplay(meta.permisos)}`);
-      return { ...state, logs: nextLogs };
-    }
+    if (!meta) { nextLogs.push(`ERROR: archivo '${name}' no encontrado`); return { ...state, logs: nextLogs }; }
+    if (meta.directorio !== state.directorioActual) { nextLogs.push(`ERROR: '${name}' no está en el directorio actual`); return { ...state, logs: nextLogs }; }
+    if (!meta.permisos.escribir) { nextLogs.push(`ERROR: sin permiso de escritura ${permisosDisplay(meta.permisos)}`); return { ...state, logs: nextLogs }; }
     const nextFileSystem = { ...state.fileSystem };
     delete nextFileSystem[name];
     const dirActual = state.directorios[state.directorioActual];
@@ -494,13 +752,7 @@ function executeCommand(state, rawInput) {
       ...state,
       logs: nextLogs,
       fileSystem: nextFileSystem,
-      directorios: {
-        ...state.directorios,
-        [state.directorioActual]: {
-          ...dirActual,
-          archivos: dirActual.archivos.filter((a) => a !== name),
-        },
-      },
+      directorios: { ...state.directorios, [state.directorioActual]: { ...dirActual, archivos: dirActual.archivos.filter((a) => a !== name) } },
       desktopItems: state.desktopItems.filter((item) => item.id !== name),
       windows: state.windows.filter((w) => w.id !== name),
     };
@@ -517,15 +769,21 @@ function executeCommand(state, rawInput) {
         "ejecutar <nombre> [-algoritmo fifo|rr] [-quantum N]",
         "procesos | memoria | kill <nombre> | killall",
         "",
+        "=== SINCRONIZACIÓN ===",
+        "sem crear <nombre> <valor>          Crear semáforo",
+        "sem wait <nombre> <proceso>         Proceso espera semáforo",
+        "sem signal <nombre>                 Liberar semáforo",
+        "sem list                            Listar semáforos",
+        "mutex crear <nombre>                Crear mutex",
+        "mutex lock <nombre> <proceso>       Proceso adquiere mutex",
+        "mutex unlock <nombre>               Liberar mutex",
+        "mutex list                          Listar mutex",
+        "",
         "=== SISTEMA DE ARCHIVOS ===",
-        "ls                              Listar directorio actual",
-        "mkdir <nombre>                  Crear carpeta",
-        "cd <nombre> | cd ..             Cambiar directorio",
-        "cat <archivo.txt>               Ver contenido",
-        "write <archivo.txt> <texto>     Escribir en archivo",
-        "chmod <archivo.txt> <r|-> <w|-> <x|->   Cambiar permisos",
-        "crear <archivo.txt>             Crear archivo",
-        "eliminar <archivo.txt>          Eliminar archivo",
+        "ls | mkdir <nombre> | cd <nombre> | cd ..",
+        "cat <archivo.txt> | write <archivo.txt> <texto>",
+        "chmod <archivo.txt> <r|-> <w|-> <x|->",
+        "crear <archivo.txt> | eliminar <archivo.txt>",
         "",
         "=== GENERAL ===",
         "clear | ayuda",
@@ -549,13 +807,17 @@ function tickScheduler(state) {
   let cpuProceso = state.cpuProceso;
   let memoria = state.memoria;
 
+  // Solo poner en CPU procesos que no estén en WAITING
   if (!cpuProceso && colaReady.length > 0) {
-    cpuProceso = colaReady[0];
-    colaReady = colaReady.slice(1);
-    procesos = procesos.map((p) =>
-      p.id === cpuProceso.id ? { ...p, estado: PROCESS_STATES.RUNNING } : p
-    );
-    cpuProceso = procesos.find((p) => p.id === cpuProceso.id) || cpuProceso;
+    const candidato = colaReady.find((p) => p.estado !== PROCESS_STATES.WAITING);
+    if (candidato) {
+      cpuProceso = candidato;
+      colaReady = colaReady.filter((p) => p.id !== candidato.id);
+      procesos = procesos.map((p) =>
+        p.id === cpuProceso.id ? { ...p, estado: PROCESS_STATES.RUNNING } : p
+      );
+      cpuProceso = procesos.find((p) => p.id === cpuProceso.id) || cpuProceso;
+    }
   }
 
   if (cpuProceso) {
@@ -565,10 +827,7 @@ function tickScheduler(state) {
 
       if (cur.infinito) {
         const updated = { ...cur, tiempo: cur.tiempo + 1, estado: PROCESS_STATES.RUNNING };
-        if (
-          cur.algoritmo === SCHEDULING_ALGORITHMS.ROUND_ROBIN &&
-          updated.cuantumUsado + 1 >= cur.quantum
-        ) {
+        if (cur.algoritmo === SCHEDULING_ALGORITHMS.ROUND_ROBIN && updated.cuantumUsado + 1 >= cur.quantum) {
           const rotated = { ...updated, cuantumUsado: 0, estado: PROCESS_STATES.READY };
           procesos[processIndex] = rotated;
           colaReady = [...colaReady, rotated];
@@ -614,11 +873,7 @@ function tickScheduler(state) {
     colaReady,
     cpuProceso,
     memoria,
-    hora: new Date().toLocaleTimeString("es-MX", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }),
+    hora: new Date().toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
   };
 }
 
@@ -630,7 +885,7 @@ function createInitialState() {
     logs: [
       "=== Mini OS v2.0 ===",
       "Sistema iniciado correctamente",
-      "Módulos: Procesos | CPU (FIFO/RR) | Memoria | Sistema de Archivos",
+      "Módulos: Procesos | CPU (FIFO/RR) | Memoria | Archivos | Sincronización",
       "",
       "Escribe 'ayuda' para ver los comandos disponibles",
       "",
@@ -645,6 +900,7 @@ function createInitialState() {
     fileSystem: INITIAL_FILES,
     directorios: INITIAL_FILE_SYSTEM,
     directorioActual: "/",
+    semaforos: {},
     hora: new Date().toLocaleTimeString("es-MX"),
   };
 }
@@ -653,6 +909,14 @@ function createInitialState() {
 // SNAPSHOT PARA IA
 // ================================
 export function buildSystemSnapshot(state) {
+  const semaforos = Object.values(state.semaforos).map((s) => ({
+    nombre: s.nombre,
+    tipo: s.tipo,
+    valor: s.valor,
+    maxValor: s.maxValor,
+    esperando: s.esperando,
+  }));
+
   return {
     memoria: { usada: state.memoria, total: MEMORY_MAX },
     procesos: state.procesos.map((p) => ({
@@ -662,13 +926,14 @@ export function buildSystemSnapshot(state) {
       infinito: p.infinito,
       tiempo: p.tiempo,
       duracion: p.infinito ? "∞" : p.duracion,
+      bloqueadoPor: p.bloqueadoPor,
     })),
     cpuActual: state.cpuProceso?.nombre ?? null,
     colaReady: state.colaReady.length,
+    semaforos,
     sistemaArchivos: {
       directorioActual: state.directorioActual,
       totalArchivos: Object.keys(state.fileSystem).length,
-      directorios: Object.keys(state.directorios),
     },
   };
 }
